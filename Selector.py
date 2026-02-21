@@ -1199,3 +1199,116 @@ class HongMeiB1Selector:
             except Exception as e:
                 logger.error(f"[{code}] 筛选异常: {e}")
         return picks
+
+
+class BrickMomentumSelector:
+    """
+    砖头动能增强策略 —— 基于知行趋势线 + 砖型图力度过滤
+    """
+
+    def __init__(self,
+                 m1=14, m2=28, m3=57, m4=114,
+                 brick_threshold=4,
+                 strength_ratio=0.666):
+        self.m1 = m1
+        self.m2 = m2
+        self.m3 = m3
+        self.m4 = m4
+        self.brick_threshold = brick_threshold
+        self.strength_ratio = strength_ratio
+
+    def _sma(self, s: pd.Series, n: int, m: int = 1):
+        """通达信专用递归SMA算法"""
+        s = s.fillna(0)
+        res = np.zeros_like(s)
+        start_idx = (s != 0).argmax() if (s != 0).any() else 0
+        res[start_idx] = s.iloc[start_idx]
+        for i in range(start_idx + 1, len(s)):
+            res[i] = (m * s.iloc[i] + (n - m) * res[i - 1]) / n
+        return pd.Series(res, index=s.index)
+
+    def _ema(self, s: pd.Series, n: int):
+        """通达信专用EMA算法"""
+        return s.ewm(span=n, adjust=False).mean()
+
+    def _passes_filters(self, df, code):
+        if df is None or len(df) < 120:
+            logger.info(f"[{code}] 跳过：数据不足")
+            return False
+
+        df = df.copy().sort_values('date').reset_index(drop=True)
+        C, H, L = df['close'], df['high'], df['low']
+
+        # ===== 1. 知行趋势共振 (白线 > 黄线) =====
+        # 白线: EMA(EMA(C, 10), 10)
+        wl = self._ema(self._ema(C, 10), 10)
+        # 黄线: 四均线均值
+        yl = (C.rolling(self.m1).mean() +
+              C.rolling(self.m2).mean() +
+              C.rolling(self.m3).mean() +
+              C.rolling(self.m4).mean()) / 4
+
+        current_wl = wl.iloc[-1]
+        current_yl = yl.iloc[-1]
+
+        if current_wl <= current_yl:
+            # logger.info(f"[{code}] 跳过：趋势未走好(白线{current_wl:.2f} <= 黄线{current_yl:.2f})")
+            return False
+
+        # ===== 2. 砖型图计算 (核心算法) =====
+        hhv4 = H.rolling(4).max()
+        llv4 = L.rolling(4).min()
+
+        # VAR1A:=(HHV(H,4)-C)/(HHV(H,4)-LLV(L,4))*100-90;
+        diff4 = hhv4 - llv4
+        var1a = (hhv4 - C) / np.where(diff4 == 0, 1e-6, diff4) * 100 - 90
+        var2a = self._sma(var1a, 4, 1) + 100
+
+        # VAR3A:=(C-LLV(L,4))/(HHV(H,4)-LLV(L,4))*100;
+        var3a = (C - llv4) / np.where(diff4 == 0, 1e-6, diff4) * 100
+        var4a = self._sma(var3a, 6, 1)
+        var5a = self._sma(var4a, 6, 1) + 100
+
+        # 砖型图:=IF(VAR5A-VAR2A>4, VAR5A-VAR2A-4, 0)
+        var6a = var5a - var2a
+        brick = np.where(var6a > self.brick_threshold, var6a - self.brick_threshold, 0)
+        brick = pd.Series(brick, index=df.index)
+
+        # 计算变动长度 (即砖头的增减方向)
+        brick_diff = brick.diff()
+
+        # ===== 3. 拐点与力度判定 =====
+        # 今天红砖增量 (diff > 0)
+        today_diff = brick_diff.iloc[-1]
+        # 昨天绿砖减量 (diff < 0)
+        yesterday_diff = brick_diff.iloc[-2]
+
+        # 拐点：昨天跌，今天涨
+        is_reversal = (today_diff > 0) and (yesterday_diff < 0)
+
+        if not is_reversal:
+            return False
+
+        # 力度：今天红砖长度 >= 昨天绿砖长度的 2/3
+        strength_ok = today_diff >= (abs(yesterday_diff) * self.strength_ratio)
+
+        if strength_ok:
+            logger.info(f"[{code}] 🔥 砖头信号触发: 趋势共振(白>{current_yl:.2f}), "
+                        f"力度({today_diff:.2f} >= {abs(yesterday_diff) * self.strength_ratio:.2f})")
+            return True
+        else:
+            logger.info(
+                f"[{code}] 跳过：反击力度不足 ({today_diff:.2f} < {abs(yesterday_diff) * self.strength_ratio:.2f})")
+            return False
+
+    def select(self, date: pd.Timestamp, data: dict) -> list:
+        picks = []
+        logger.info(f"--- 砖头动能策略开始筛选 [{date.date()}] ---")
+        for code, df in data.items():
+            try:
+                sub = df[df['date'] <= date].copy()
+                if self._passes_filters(sub, code):
+                    picks.append(code)
+            except Exception as e:
+                logger.error(f"[{code}] 策略运行异常: {e}")
+        return picks

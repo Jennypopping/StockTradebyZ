@@ -45,7 +45,7 @@
         "max_window": 120,
         "bbi_q_threshold": 0.2,
         "upper_rsv_threshold": 75,
-        "lower_rsv_threshold":25
+        "lower_rsv_threshold": 25
       }
     },
     {
@@ -76,10 +76,10 @@
     {
       "class": "BigBullishVolumeSelector",
       "alias": "暴力K战法",
-      "activate": false,
+      "activate": true,
       "params": {
         "up_pct_threshold": 0.06,
-        "upper_wick_pct_max": 0.02,            
+        "upper_wick_pct_max": 0.02,
         "require_bullish_close": true,
         "close_lt_zxdq_mult": 1.15,
         "vol_lookback_n": 20,
@@ -88,7 +88,7 @@
     },
     {
       "class": "HongMeiB1Selector",
-      "alias": "红梅师兄B1战法",
+      "alias": "HMB1战法",
       "activate": true,
       "params": {
         "j_threshold": 13.0,
@@ -103,7 +103,19 @@
         "m3": 57,
         "m4": 114
       }
+    },
+    {
+      "class": "BrickMomentumSelector",
+      "alias": "砖型图转红超短战法",
+      "activate": true,
+      "params": {
+        "m1": 14,
+        "m2": 28,
+        "m3": 57,
+        "m4": 114,
+        "brick_threshold": 4.0,
+        "strength_ratio": 0.666
+      }
     }
   ]
 }
-
