@@ -1232,74 +1232,79 @@ class BrickMomentumSelector:
         return s.ewm(span=n, adjust=False).mean()
 
     def _passes_filters(self, df, code):
+        """
+        2.0倍以上红砖动力 + [0, 3%]涨幅控制 + 趋势共振
+        """
+        # 1. 基础数据校验：确保数据量足以计算最长均线 M4(114)
         if df is None or len(df) < 120:
-            logger.info(f"[{code}] 跳过：数据不足")
             return False
 
+        # 确保按日期升序排列
         df = df.copy().sort_values('date').reset_index(drop=True)
         C, H, L = df['close'], df['high'], df['low']
 
-        # ===== 1. 知行趋势共振 (白线 > 黄线) =====
+        # ===== 2. 趋势线判定 (白线要在黄线上方) =====
         # 白线: EMA(EMA(C, 10), 10)
         wl = self._ema(self._ema(C, 10), 10)
-        # 黄线: 四均线均值
+        # 黄线: (MA14+MA28+MA57+MA114)/4
         yl = (C.rolling(self.m1).mean() +
               C.rolling(self.m2).mean() +
               C.rolling(self.m3).mean() +
               C.rolling(self.m4).mean()) / 4
 
-        current_wl = wl.iloc[-1]
-        current_yl = yl.iloc[-1]
-
-        if current_wl <= current_yl:
-            # logger.info(f"[{code}] 跳过：趋势未走好(白线{current_wl:.2f} <= 黄线{current_yl:.2f})")
+        # 核心过滤：趋势必须向上
+        if wl.iloc[-1] <= yl.iloc[-1]:
             return False
 
-        # ===== 2. 砖型图计算 (核心算法) =====
+        # ===== 3. 砖型图核心算法 =====
         hhv4 = H.rolling(4).max()
         llv4 = L.rolling(4).min()
-
-        # VAR1A:=(HHV(H,4)-C)/(HHV(H,4)-LLV(L,4))*100-90;
         diff4 = hhv4 - llv4
+
+        # 针对平价、停牌等特殊情况的 var1a/var3a 处理
         var1a = (hhv4 - C) / np.where(diff4 == 0, 1e-6, diff4) * 100 - 90
         var2a = self._sma(var1a, 4, 1) + 100
 
-        # VAR3A:=(C-LLV(L,4))/(HHV(H,4)-LLV(L,4))*100;
         var3a = (C - llv4) / np.where(diff4 == 0, 1e-6, diff4) * 100
         var4a = self._sma(var3a, 6, 1)
         var5a = self._sma(var4a, 6, 1) + 100
 
-        # 砖型图:=IF(VAR5A-VAR2A>4, VAR5A-VAR2A-4, 0)
         var6a = var5a - var2a
-        brick = np.where(var6a > self.brick_threshold, var6a - self.brick_threshold, 0)
-        brick = pd.Series(brick, index=df.index)
+        # 砖型图计算逻辑
+        brick = np.where(var6a > 4, var6a - 4, 0)
+        brick_series = pd.Series(brick, index=df.index)
+        brick_diff = brick_series.diff()
 
-        # 计算变动长度 (即砖头的增减方向)
-        brick_diff = brick.diff()
+        # ===== 4. 拐点与 2.0倍 力度判定 =====
+        today_diff = brick_diff.iloc[-1]  # 今日红砖增量 (正数)
+        yesterday_diff = brick_diff.iloc[-2]  # 昨日绿砖减量 (负数)
 
-        # ===== 3. 拐点与力度判定 =====
-        # 今天红砖增量 (diff > 0)
-        today_diff = brick_diff.iloc[-1]
-        # 昨天绿砖减量 (diff < 0)
-        yesterday_diff = brick_diff.iloc[-2]
-
-        # 拐点：昨天跌，今天涨
+        # 拐点逻辑：昨日正在下跌(绿砖)，今日强烈反击(红砖)
         is_reversal = (today_diff > 0) and (yesterday_diff < 0)
-
         if not is_reversal:
             return False
 
-        # 力度：今天红砖长度 >= 昨天绿砖长度的 2/3
-        strength_ok = today_diff >= (abs(yesterday_diff) * self.strength_ratio)
-
-        if strength_ok:
-            logger.info(f"[{code}] 🔥 砖头信号触发: 趋势共振(白>{current_yl:.2f}), "
-                        f"力度({today_diff:.2f} >= {abs(yesterday_diff) * self.strength_ratio:.2f})")
-            return True
-        else:
-            logger.info(
-                f"[{code}] 跳过：反击力度不足 ({today_diff:.2f} < {abs(yesterday_diff) * self.strength_ratio:.2f})")
+        # 力度逻辑：今日反击量级 >= 昨日杀跌量级的 2.0 倍
+        strength_ok = today_diff >= (abs(yesterday_diff) * 2.0)
+        if not strength_ok:
             return False
+
+        # ===== 5. 涨幅控制 (寻找低位起步点) =====
+        last_close = C.iloc[-1]
+        prev_close = C.iloc[-2]
+        change_pct = (last_close - prev_close) / prev_close * 100
+
+        # 条件：涨幅在 0% 到 3% 之间 (包含 3%)
+        if not (0 < change_pct <= 3.0):
+            return False
+
+        # ===== 6. 最终记录与通过 =====
+        logger.info(
+            f"[{code}] 🚀 捕捉到2倍动力反转！力度:{today_diff / abs(yesterday_diff):.2f}x | 涨幅:{change_pct:.2f}%")
+
+        return True
+
+
 
     def select(self, date: pd.Timestamp, data: dict) -> list:
         picks = []

@@ -114,7 +114,7 @@
         "m3": 57,
         "m4": 114,
         "brick_threshold": 4.0,
-        "strength_ratio": 0.666
+        "strength_ratio": 5.0
       }
     }
   ]
