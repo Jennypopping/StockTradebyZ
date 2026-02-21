@@ -14,8 +14,6 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
-
-
 logger = logging.getLogger("selector")
 
 
@@ -1016,11 +1014,11 @@ logger.addHandler(file_handler)
 
 class HongMeiB1Selector:
     """
-    红梅师兄B1战法选股器（恢复能选出股票的逻辑，保留关键严格性）
+    红梅师兄 B1 战法 —— 通达信 100% 等效复刻版（带详细日志补全版）
     """
 
     def __init__(self,
-                 j_threshold: float = 13.0,  # 改回13.0
+                 j_threshold: float = 13.0,
                  yangyin_mult: float = 1.5,
                  a28_threshold: float = 0.005,
                  mv_threshold: float = 50.0,
@@ -1031,6 +1029,7 @@ class HongMeiB1Selector:
                  m2: int = 28,
                  m3: int = 57,
                  m4: int = 114):
+
         self.j_threshold = j_threshold
         self.yangyin_mult = yangyin_mult
         self.a28_threshold = a28_threshold
@@ -1043,166 +1042,160 @@ class HongMeiB1Selector:
         self.m3 = m3
         self.m4 = m4
 
-    def _safe_get(self, series, key, default=0.0):
-        return series[key] if key in series and pd.notna(series[key]) else default
-
+    # ===== 通达信 SMA 算法：递归对齐 =====
     def _sma(self, s: pd.Series, n: int, m: int = 1):
-        return s.ewm(alpha=m / n, adjust=False).mean()
+        s = s.fillna(0)
+        res = np.zeros_like(s)
+        # 寻找第一个有效值起始点
+        start_idx = (s != 0).argmax() if (s != 0).any() else 0
+        res[start_idx] = s.iloc[start_idx]
+        for i in range(start_idx + 1, len(s)):
+            res[i] = (m * s.iloc[i] + (n - m) * res[i - 1]) / n
+        return pd.Series(res, index=s.index)
 
-    def _compute_kdj(self, df):
-        df = df.copy()
-        n = 9
-        hhv9 = df['high'].rolling(n, min_periods=1).max()
-        llv9 = df['low'].rolling(n, min_periods=1).min()
-        den = hhv9 - llv9
-        rsv = np.where(den == 0, 50, (df['close'] - llv9) / den * 100)
-        df['RSV'] = rsv
-        df['K'] = self._sma(df['RSV'], 3, 1)
-        df['D'] = self._sma(df['K'], 3, 1)
-        df['J'] = 3 * df['K'] - 2 * df['D']
-        return df
+    # ===== 通达信 EMA 算法：用于知行趋势线 =====
+    def _ema(self, s: pd.Series, n: int):
+        return s.ewm(span=n, adjust=False).mean()
 
-    def _passes_filters(self, hist, code):
-        if hist is None or len(hist) < 30:
-            logger.info(f"[{code}] 跳过：历史数据不足（{len(hist)} < 30）")
+    def _passes_filters(self, df, code):
+        if df is None or len(df) < 120:
+            logger.info(f"[{code}] 跳过：历史数据不足 {len(df)}")
             return False
 
-        hist = hist.copy().sort_values('date')
-        df = hist
+        df = df.copy().sort_values('date').reset_index(drop=True)
+        C, O, H, L = df['close'], df['open'], df['high'], df['low']
+        V, AMT, CAP = df['volume'], df['amount'], df['capital']
 
-        # 1. KDJ J值（改回13.0）
-        df = self._compute_kdj(df)
-        j = self._safe_get(df.iloc[-1], 'J', 999)
-        if j > self.j_threshold:
-            logger.info(f"[{code}] 跳过：J值超限（{j:.2f} > {self.j_threshold}）")
+        # ===== 1. KDJ 计算 =====
+        low_9 = L.rolling(9, min_periods=1).min()
+        high_9 = H.rolling(9, min_periods=1).max()
+        den = high_9 - low_9
+        rsv = pd.Series(np.where(den == 0, 50, (C - low_9) / den * 100), index=df.index)
+
+        K = self._sma(rsv, 3, 1)
+        D = self._sma(K, 3, 1)
+        J = 3 * K - 2 * D
+        j_val = J.iloc[-1]
+
+        if j_val > self.j_threshold:
+            logger.info(f"[{code}] 跳过：J值不达标 {j_val:.2f}")
             return False
+        logger.info(f"[{code}] J值通过 {j_val:.2f}")
 
-        # 2. 阳阴量比（改回二选一，保留严格阳线）
-        df['REAL_YANG'] = (df['close'] > df['open']) & (df['close'] > df['close'].shift(1))
-        df['REAL_YIN'] = (df['close'] < df['open']) & (df['close'] < df['close'].shift(1))
+        # ===== 2. 阳阴量比 (REAL_YANG 精确对齐) =====
+        # 通达信: REAL_YANG:=C>O AND NOT(C<REF(C,1)); 即 C>O 且 C>=REF(C,1)
+        df['REAL_YANG'] = (C > O) & (C >= C.shift(1))
+        df['REAL_YIN'] = (C < O) & (C <= C.shift(1))
 
-        vy21 = (df['volume'] * df['REAL_YANG']).rolling(21, min_periods=1).sum()
-        vi21 = (df['volume'] * df['REAL_YIN']).rolling(21, min_periods=1).sum()
-        vy14 = (df['volume'] * df['REAL_YANG']).rolling(14, min_periods=1).sum()
-        vi14 = (df['volume'] * df['REAL_YIN']).rolling(14, min_periods=1).sum()
+        vy21 = (V * df['REAL_YANG']).rolling(21, min_periods=1).sum()
+        vi21 = (V * df['REAL_YIN']).rolling(21, min_periods=1).sum()
+        vy14 = (V * df['REAL_YANG']).rolling(14, min_periods=1).sum()
+        vi14 = (V * df['REAL_YIN']).rolling(14, min_periods=1).sum()
 
-        yy21 = (vy21.iloc[-1] > self.yangyin_mult * vi21.iloc[-1]) if vi21.iloc[-1] > 0 else False
-        yy14 = (vy14.iloc[-1] > self.yangyin_mult * vi14.iloc[-1]) if vi14.iloc[-1] > 0 else False
-        # 关键修改：改回二选一
-        if not (yy21 or yy14):
-            logger.info(
-                f"[{code}] 跳过：阳阴量比不达标（21日：{vy21.iloc[-1]:.0f}/{vi21.iloc[-1]:.0f} | 14日：{vy14.iloc[-1]:.0f}/{vi14.iloc[-1]:.0f}）")
+        y21_ratio = vy21.iloc[-1] / max(vi21.iloc[-1], 1e-6)
+        y14_ratio = vy14.iloc[-1] / max(vi14.iloc[-1], 1e-6)
+
+        yangyin_ok = (vy21.iloc[-1] > self.yangyin_mult * vi21.iloc[-1]) or \
+                     (vy14.iloc[-1] > self.yangyin_mult * vi14.iloc[-1])
+
+        if not yangyin_ok:
+            logger.info(f"[{code}] 跳过：阳阴量比不达标 21:{y21_ratio:.2f} 14:{y14_ratio:.2f}")
             return False
+        logger.info(f"[{code}] 阳阴量比通过 21:{y21_ratio:.2f} 14:{y14_ratio:.2f}")
 
-        # 3. A28成交额
-        a28 = df['amount'].rolling(28, min_periods=1).mean() / 10000
-        if a28.iloc[-1] < self.a28_threshold:
-            logger.info(f"[{code}] 跳过：A28不达标（{a28.iloc[-1]:.6f}亿 < {self.a28_threshold}亿）")
+        # ===== 3. A28 (成交额过滤) 修正版 =====
+        # Tushare amount 单位是千元，通达信 AMOUNT 是元
+        # 换算成亿元：(千元 * 1000) / 1e8 = 千元 / 1e5
+        a28_val = (AMT.rolling(28, min_periods=1).mean() / 1e5).iloc[-1]
+
+        if a28_val < self.a28_threshold:
+            logger.info(f"[{code}] 跳过：A28不达标 {a28_val:.6f}")
             return False
+        logger.info(f"[{code}] A28通过 {a28_val:.6f}")
 
-        # 4. 市值
-        close = df['close'].iloc[-1]
-        cap = df['capital'].iloc[-1] if 'capital' in df.columns else 1e8
-        mv = close * cap * 100 / 1e8
-        if mv < self.mv_threshold:
-            logger.info(f"[{code}] 跳过：市值不达标（{mv:.2f}亿 < {self.mv_threshold}亿）")
+        # ===== 4. 市值 (MV) 修正版 =====
+        # Tushare capital 单位是万股，C 是元
+        # 换算成亿元：(元 * 万股) / 10000
+        mv_val = (C.iloc[-1] * CAP.iloc[-1]) / 10000
+
+        if mv_val < self.mv_threshold:
+            logger.info(f"[{code}] 跳过：市值不达标 {mv_val:.2f}亿")
             return False
+        logger.info(f"[{code}] 市值通过 {mv_val:.2f}亿")
 
-        # 5. GOOD28（改回允许1次BAD K线）
-        o28l = df['open'].rolling(28, min_periods=1).min()
-        o28h = df['open'].rolling(28, min_periods=1).max()
-        df['O85'] = o28l + 0.925 * (o28h - o28l)
-        df['TOP15O'] = df['open'] >= df['O85']
-        df['FD15'] = (df['close'] < df['close'].shift(1)) & (df['close'] <= df['open']) & (
-                    df['volume'] >= 1.15 * df['volume'].shift(1))
-        df['BAD'] = df['TOP15O'] & df['FD15']
-        bad_cnt = df['BAD'].rolling(28, min_periods=1).sum()
-        if bad_cnt.iloc[-1] > 1:  # 改回>1（允许1次）
-            logger.info(f"[{code}] 跳过：GOOD28不达标（BAD K线数{bad_cnt.iloc[-1]:.0f} > 1）")
+        # ===== 5. GOOD28 (高位放量阴线过滤) =====
+        o_llv28 = O.rolling(28, min_periods=1).min()
+        o_hhv28 = O.rolling(28, min_periods=1).max()
+        o85 = o_llv28 + 0.925 * (o_hhv28 - o_llv28)
+
+        top15o = O >= o85
+        fd15 = (C < C.shift(1)) & (C <= O) & (V >= 1.15 * V.shift(1))
+        bad_cnt = (top15o & fd15).rolling(28, min_periods=1).sum().iloc[-1]
+
+        if bad_cnt != 0:
+            logger.info(f"[{code}] 跳过：GOOD28不达标 (放量阴线次数={int(bad_cnt)})")
             return False
+        logger.info(f"[{code}] GOOD28通过")
 
-        # 6. MAX28_OK（改回允许1次最大量阴线）
-        mv28 = df['volume'].rolling(28, min_periods=1).max()
-        df['MAX_YIN'] = (df['volume'] == mv28) & df['REAL_YIN']
-        max_yin_cnt = df['MAX_YIN'].rolling(28, min_periods=1).sum()
-        if max_yin_cnt.iloc[-1] > 1:  # 改回>1（允许1次）
-            logger.info(f"[{code}] 跳过：MAX28_OK不达标（最大量阴线数{max_yin_cnt.iloc[-1]:.0f} > 1）")
+        # ===== 6. MAX28 (最高成交量不应是阴线) =====
+        maxvol28 = V.rolling(28, min_periods=1).max()
+        max_yin_cnt = ((V == maxvol28) & df['REAL_YIN']).rolling(28, min_periods=1).sum().iloc[-1]
+
+        if max_yin_cnt != 0:
+            logger.info(f"[{code}] 跳过：MAX28不达标 (最大量日为 REAL_YIN)")
             return False
+        logger.info(f"[{code}] MAX28通过")
 
-        # 7. PLRY_CNT
-        df['AVG40'] = df['volume'].rolling(40, min_periods=1).mean()
-        df['PLRY'] = (df['volume'] > self.avg40_vol_mult * df['volume'].shift(1)) & (df['close'] > df['open']) & (
-                    df['volume'] > df['AVG40'])
-        plry_cnt = df['PLRY'].rolling(28, min_periods=1).sum()
-        plry_ok = plry_cnt.iloc[-1] >= self.plry_cnt_min
-        if not plry_ok:
-            logger.info(f"[{code}] 跳过：PLRY_CNT不达标（{plry_cnt.iloc[-1]:.0f} < {self.plry_cnt_min}）")
-            return False
+        # ===== 7. PLRY (倍量柱统计) =====
+        avg40_v = V.rolling(40, min_periods=1).mean()
+        plry = (V > self.avg40_vol_mult * V.shift(1)) & (C > O) & (V > avg40_v)
+        plry_cnt = plry.rolling(28, min_periods=1).sum().iloc[-1]
+        plry_ok = plry_cnt >= self.plry_cnt_min
 
-        # 8. TRIGGER（改回OR）
-        df['V40P'] = df['volume'].shift(1).rolling(40, min_periods=1).mean()
-        df['BD'] = (df['close'] > df['close'].shift(1)) & (df['close'] >= df['open'])
-        df['BIGV'] = df['volume'] > self.bigv_mult * df['V40P']
-        c40l = df['close'].rolling(40, min_periods=1).min()
-        c40h = df['close'].rolling(40, min_periods=1).max()
-        df['R55'] = c40l + 0.55 * (c40h - c40l)
-        df['POSOK'] = df['close'] > df['R55']
+        # ===== 8. TRIGGER (关键K形态) =====
+        v40p = V.shift(1).rolling(40, min_periods=1).mean()
+        bd = (C > C.shift(1)) & (C >= O)
+        bigv = V > self.bigv_mult * v40p
 
-        bd = df['BD'].iloc[-1]
-        bv = df['BIGV'].iloc[-1]
-        pk = df['POSOK'].iloc[-1]
-        trigger = plry_ok or (bd and bv and pk)  # 改回OR
+        c_llv40 = C.rolling(40, min_periods=1).min()
+        c_hhv40 = C.rolling(40, min_periods=1).max()
+        r55 = c_llv40 + 0.55 * (c_hhv40 - c_llv40)
+        posok = C > r55
+
+        trigger = plry_ok or (bd.iloc[-1] and bigv.iloc[-1] and posok.iloc[-1])
+
+        logger.info(
+            f"[{code}] TRIGGER分析: PLRY_OK={plry_ok}({int(plry_cnt)}次), BD={bd.iloc[-1]}, BIGV={bigv.iloc[-1]}, POSOK={posok.iloc[-1]}")
+
         if not trigger:
-            logger.info(f"[{code}] 跳过：TRIGGER不达标（PLRY_OK={plry_ok}, BD={bd}, BIGV={bv}, POSOK={pk}）")
+            logger.info(f"[{code}] 跳过：TRIGGER未激活")
             return False
 
-        # 9. 趋势线WL/YL
-        ema10 = df['close'].ewm(span=10, adjust=False, min_periods=1).mean()
-        df['WL'] = ema10.ewm(span=10, adjust=False, min_periods=1).mean()
+        # ===== 9. 知行趋势线 (WL > YL 且 C > YL) =====
+        wl = self._ema(self._ema(C, 10), 10)
+        yl = (C.rolling(self.m1, min_periods=1).mean() +
+              C.rolling(self.m2, min_periods=1).mean() +
+              C.rolling(self.m3, min_periods=1).mean() +
+              C.rolling(self.m4, min_periods=1).mean()) / 4
 
-        ma1 = df['close'].rolling(self.m1, min_periods=1).mean()
-        ma2 = df['close'].rolling(self.m2, min_periods=1).mean()
-        ma3 = df['close'].rolling(self.m3, min_periods=1).mean()
-        ma4 = df['close'].rolling(self.m4, min_periods=1).mean()
-        df['YL'] = (ma1 + ma2 + ma3 + ma4) / 4
+        cond_wl = wl.iloc[-1] > yl.iloc[-1]
+        cond_yl = C.iloc[-1] > yl.iloc[-1]
 
-        wl = df['WL'].iloc[-1]
-        yl = df['YL'].iloc[-1]
-        c = df['close'].iloc[-1]
-        if not (wl > yl and c > yl):
-            logger.info(f"[{code}] 跳过：趋势线不达标（WL={wl:.2f}, YL={yl:.2f}, C={c:.2f}）")
+        if not (cond_wl and cond_yl):
+            logger.info(f"[{code}] 跳过：趋势线不达标 WL>YL:{cond_wl}, C>YL:{cond_yl}")
             return False
 
-        logger.info(f"[{code}] ✅ 满足所有条件！")
+        logger.info(f"[{code}] ✅ 完全满足通达信B1条件")
         return True
 
-    def select(self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]) -> List[str]:
+    def select(self, date: pd.Timestamp, data: dict) -> list:
         picks = []
-        total_stocks = len(data)
-
-        logger.info(f"\n========== 红梅B1战法选股开始 ==========")
-        logger.info(f"选股日期：{date.strftime('%Y-%m-%d')}")
-        logger.info(f"待检查股票总数：{total_stocks}")
-        logger.info(f"=======================================\n")
-
-        for code, df in tqdm(data.items(), desc="选股进度"):
-            logger.info(f"\n----- 检查股票 {code} -----")
+        logger.info(f"\n========== 红梅B1 启动筛选 [{date.strftime('%Y-%m-%d')}] ==========")
+        for code, df in data.items():
             try:
-                if not pd.api.types.is_datetime64_any_dtype(df['date']):
-                    df['date'] = pd.to_datetime(df['date'])
                 sub = df[df['date'] <= date].copy()
                 if self._passes_filters(sub, code):
                     picks.append(code)
             except Exception as e:
-                logger.error(f"[{code}] 筛选失败：{str(e)}")
-                continue
-
-        logger.info(f"\n========== 选股完成 ==========")
-        logger.info(f"符合条件股票数量：{len(picks)} / {total_stocks}")
-        if picks:
-            logger.info(f"符合条件股票列表：{', '.join(picks)}")
-        else:
-            logger.warning(f"⚠️  无符合条件的股票！")
-        logger.info(f"=======================================")
-
+                logger.error(f"[{code}] 筛选异常: {e}")
         return picks
