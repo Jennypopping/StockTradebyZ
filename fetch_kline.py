@@ -39,13 +39,16 @@ BAN_PATTERNS = (
     "max retries exceeded"
 )
 
+
 def _looks_like_ip_ban(exc: Exception) -> bool:
     msg = (str(exc) or "").lower()
     return any(pat in msg for pat in BAN_PATTERNS)
 
+
 class RateLimitError(RuntimeError):
     """表示命中限流/封禁，需要长时间冷却后重试。"""
     pass
+
 
 def _cool_sleep(base_seconds: int) -> None:
     jitter = random.uniform(0.9, 1.2)
@@ -53,14 +56,16 @@ def _cool_sleep(base_seconds: int) -> None:
     logger.warning("疑似被限流/封禁，进入冷却期 %d 秒...", sleep_s)
     time.sleep(sleep_s)
 
+
 # --------------------------- 历史K线（Tushare 日线，固定qfq） --------------------------- #
 pro: Optional[ts.pro_api] = None  # 模块级会话
+
 
 def set_api(session) -> None:
     """由外部(比如GUI)注入已创建好的 ts.pro_api() 会话"""
     global pro
     pro = session
-    
+
 
 def _to_ts_code(code: str) -> str:
     """把6位code映射到标准 ts_code 后缀。"""
@@ -71,6 +76,7 @@ def _to_ts_code(code: str) -> str:
         return f"{code}.BJ"
     else:
         return f"{code}.SZ"
+
 
 def _get_kline_tushare(code: str, start: str, end: str) -> pd.DataFrame:
     ts_code = _to_ts_code(code)
@@ -99,6 +105,7 @@ def _get_kline_tushare(code: str, start: str, end: str) -> pd.DataFrame:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.sort_values("date").reset_index(drop=True)
 
+
 def validate(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -108,6 +115,7 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
     if (df["date"] > pd.Timestamp.today()).any():
         raise ValueError("数据包含未来日期，可能抓取错误！")
     return df
+
 
 # --------------------------- 读取 stocklist.csv & 过滤板块 --------------------------- #
 
@@ -131,8 +139,9 @@ def _filter_by_boards_stocklist(df: pd.DataFrame, exclude_boards: set[str]) -> p
 
     return df[mask].copy()
 
+
 def load_codes_from_stocklist(stocklist_csv: Path, exclude_boards: set[str]) -> List[str]:
-    df = pd.read_csv(stocklist_csv)    
+    df = pd.read_csv(stocklist_csv)
     df = _filter_by_boards_stocklist(df, exclude_boards)
     codes = df["symbol"].astype(str).str.zfill(6).tolist()
     codes = list(dict.fromkeys(codes))  # 去重保持顺序
@@ -140,12 +149,13 @@ def load_codes_from_stocklist(stocklist_csv: Path, exclude_boards: set[str]) -> 
                 stocklist_csv, len(codes), ",".join(sorted(exclude_boards)) or "无")
     return codes
 
+
 # --------------------------- 单只抓取（全量覆盖保存） --------------------------- #
 def fetch_one(
-    code: str,
-    start: str,
-    end: str,
-    out_dir: Path,
+        code: str,
+        start: str,
+        end: str,
+        out_dir: Path,
 ):
     csv_path = out_dir / f"{code}.csv"
 
@@ -169,14 +179,17 @@ def fetch_one(
     else:
         logger.error("%s 三次抓取均失败，已跳过！", code)
 
+
 # --------------------------- 主入口 --------------------------- #
 def main():
-    parser = argparse.ArgumentParser(description="从 stocklist.csv 读取股票池并用 Tushare 抓取日线K线（固定qfq，全量覆盖）")
+    parser = argparse.ArgumentParser(
+        description="从 stocklist.csv 读取股票池并用 Tushare 抓取日线K线（固定qfq，全量覆盖）")
     # 抓取范围
     parser.add_argument("--start", default="20190101", help="起始日期 YYYYMMDD 或 'today'")
     parser.add_argument("--end", default="today", help="结束日期 YYYYMMDD 或 'today'")
     # 股票清单与板块过滤
-    parser.add_argument("--stocklist", type=Path, default=Path("./stocklist.csv"), help="股票清单CSV路径（需含 ts_code 或 symbol）")
+    parser.add_argument("--stocklist", type=Path, default=Path("./stocklist.csv"),
+                        help="股票清单CSV路径（需含 ts_code 或 symbol）")
     parser.add_argument(
         "--exclude-boards",
         nargs="*",
@@ -192,12 +205,15 @@ def main():
     # ---------- Tushare Token ---------- #
     os.environ["NO_PROXY"] = "api.waditu.com,.waditu.com,waditu.com"
     os.environ["no_proxy"] = os.environ["NO_PROXY"]
-    ts_token = os.environ.get("TUSHARE_TOKEN")
+    # ts_token = os.environ.get("TUSHARE_TOKEN")
+    ts_token = "26d6a5877ad3da85312145f9975b98873a5291b5a50e3af33d6b77671b70"
     if not ts_token:
         raise ValueError("请先设置环境变量 TUSHARE_TOKEN，例如：export TUSHARE_TOKEN=你的token")
-    ts.set_token(ts_token)
+    # ts.set_token(ts_token)
     global pro
-    pro = ts.pro_api()
+    pro = ts.pro_api(ts_token)
+    pro._DataApi__token = ts_token  # 保证有这个代码，不然不可以获取
+    pro._DataApi__http_url = 'http://lianghua.nanyangqiankun.top'
 
     # ---------- 日期解析 ---------- #
     start = dt.date.today().strftime("%Y%m%d") if str(args.start).lower() == "today" else args.start
@@ -235,6 +251,7 @@ def main():
             pass
 
     logger.info("全部任务完成，数据已保存至 %s", out_dir.resolve())
+
 
 if __name__ == "__main__":
     main()

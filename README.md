@@ -80,14 +80,16 @@ export TUSHARE_TOKEN=你的token
 
 ```bash
 python fetch_kline.py \
-  --start 20240101 \
+  --start 20250101 \
   --end today \
   --stocklist ./stocklist.csv \
-  --exclude-boards gem star bj \
+  --exclude-boards star bj \
   --out ./data \
   --workers 6
 ```
-
+```
+python fetch_kline.py --start 20250101 --end today --stocklist ./stocklist.csv --exclude-boards star bj --out ./data --workers 6
+```
 * **数据源固定**：Tushare 日线，**前复权 qfq**。
 * **保存策略**：每只股票**全量覆盖写入** `./data/XXXXXX.csv`。
 * **并发抓取**：默认 6 线程；支持封禁冷却（命中「访问频繁/429/403…」将睡眠约 600s 并重试，最多 3 次）。
@@ -100,7 +102,10 @@ python select_stock.py \
   --config ./configs.json \
   --date 2025-09-10
 ```
-
+window
+```
+python select_stock.py --data-dir ./data --config ./configs.json
+```
 > `--date` 可省略，默认取数据中的最后交易日。
 
 ---
