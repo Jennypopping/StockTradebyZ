@@ -1304,14 +1304,149 @@ class BrickMomentumSelector:
 
         return True
 
-
-
     def select(self, date: pd.Timestamp, data: dict) -> list:
         picks = []
         logger.info(f"--- 砖头动能策略开始筛选 [{date.date()}] ---")
         for code, df in data.items():
             try:
                 sub = df[df['date'] <= date].copy()
+                if self._passes_filters(sub, code):
+                    picks.append(code)
+            except Exception as e:
+                logger.error(f"[{code}] 策略运行异常: {e}")
+        return picks
+
+
+import pandas as pd
+import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class HongMeiB1BrickCombinedSelector:
+    """
+    红梅B1 + 砖头爆发实战放宽版
+    已适配列名: volume, amount, open, close, high, low
+    """
+
+    def __init__(self,
+                 m1=14, m2=28, m3=57, m4=114,
+                 j_threshold=13.0,
+                 strength_ratio=0.666):
+        self.m1 = m1
+        self.m2 = m2
+        self.m3 = m3
+        self.m4 = m4
+        self.j_threshold = j_threshold
+        self.strength_ratio = strength_ratio
+
+    def _sma(self, s: pd.Series, n: int, m: int = 1):
+        """通达信专用递归SMA算法"""
+        s = s.fillna(0)
+        res = np.zeros_like(s)
+        start_idx = (s != 0).argmax() if (s != 0).any() else 0
+        res[start_idx] = s.iloc[start_idx]
+        for i in range(start_idx + 1, len(s)):
+            res[i] = (m * s.iloc[i] + (n - m) * res[i - 1]) / n
+        return pd.Series(res, index=s.index)
+
+    def _ema(self, s: pd.Series, n: int):
+        """通达信专用EMA算法"""
+        return s.ewm(span=n, adjust=False).mean()
+
+    def _passes_filters(self, df, code):
+        if df is None or len(df) < 120:
+            return False
+
+        df = df.copy().sort_values('date').reset_index(drop=True)
+
+        C = df['close']
+        H = df['high']
+        L = df['low']
+        O = df['open']
+        V = df['volume'] if 'volume' in df.columns else df['vol']
+        AMT = df['amount']
+
+        # 1.1 J值 (取最后一位)
+        hhv9 = H.rolling(9).max()
+        llv9 = L.rolling(9).min()
+        den = hhv9 - llv9
+        rsv = np.where(den == 0, 50, (C - llv9) / den * 100)
+        k = self._sma(pd.Series(rsv), 3, 1)
+        d = self._sma(k, 3, 1)
+        j_val = (3 * k - 2 * d).iloc[-1]
+        j_ok = j_val <= self.j_threshold
+
+        # 1.2 阳阴量能 (取最后一位)
+        real_yang = (C > O) & (C >= C.shift(1))
+        real_yin = (C < O) & (C <= C.shift(1))
+        vol_yang21 = (V * real_yang).rolling(21).sum().iloc[-1]
+        vol_yin21 = (V * real_yin).rolling(21).sum().iloc[-1]
+        vol_yang14 = (V * real_yang).rolling(14).sum().iloc[-1]
+        vol_yin14 = (V * real_yin).rolling(14).sum().iloc[-1]
+        yangyin_ok = (vol_yang21 > 1.5 * vol_yin21) or (vol_yang14 > 1.5 * vol_yin14)
+
+        # 1.4 风控过滤 (取最后一位)
+        o_llv28 = O.rolling(28).min()
+        o_hhv28 = O.rolling(28).max()
+        o85 = o_llv28 + 0.925 * (o_hhv28 - o_llv28)
+        top15o = O >= o85
+        fd15 = (C < C.shift(1)) & (C <= O) & (V >= 1.15 * V.shift(1))
+        good28 = (top15o & fd15).rolling(28).sum().iloc[-1] == 0
+
+        max_vol28 = V.rolling(28).max()
+        max28_ok = ((V == max_vol28) & real_yin).rolling(28).sum().iloc[-1] == 0
+
+        # 1.5 触发逻辑
+        avg40 = V.rolling(40).mean()
+        plry = (V > 1.8 * V.shift(1)) & (C > O) & (V > avg40)
+        plry_cnt = plry.rolling(28).sum().iloc[-1] >= 3
+        v40p = V.shift(1).rolling(40).mean()
+        bigv_bool = ((C > C.shift(1)) & (C >= O) & (V > 1.75 * v40p)).iloc[-1]
+        r55 = C.rolling(40).min() + 0.55 * (C.rolling(40).max() - C.rolling(40).min())
+        pos_ok = C.iloc[-1] > r55.iloc[-1]
+
+        b1_trigger = plry_cnt or (bigv_bool and pos_ok)
+        b1_base = b1_trigger and j_ok and (AMT.iloc[-1] > 0) and good28 and max28_ok and yangyin_ok
+
+        # 2. 趋势 (取最后一位)
+        wl = self._ema(self._ema(C, 10), 10).iloc[-1]
+        yl = ((C.rolling(self.m1).mean() + C.rolling(self.m2).mean() +
+               C.rolling(self.m3).mean() + C.rolling(self.m4).mean()) / 4).iloc[-1]
+        trend_ok = (wl > yl) and (C.iloc[-1] > yl)
+
+        # 3. 砖头 (取最后两位计算增量)
+        hhv4 = H.rolling(4).max()
+        llv4 = L.rolling(4).min()
+        diff4 = hhv4 - llv4
+        var1a = (hhv4 - C) / np.where(diff4 == 0, 1e-6, diff4) * 100 - 90
+        var2a = self._sma(var1a, 4, 1) + 100
+        var3a = (C - llv4) / np.where(diff4 == 0, 1e-6, diff4) * 100
+        var4a = self._sma(var3a, 6, 1)
+        var5a = self._sma(var4a, 6, 1) + 100
+        var6a = var5a - var2a
+        brick = np.where(var6a > 4, var6a - 4, 0)
+        brick_diff = pd.Series(brick).diff()
+
+        t_diff = brick_diff.iloc[-1]
+        y_diff = brick_diff.iloc[-2]
+        brick_ok = (t_diff > 0) and (y_diff < 0) and (t_diff >= abs(y_diff) * self.strength_ratio)
+
+        # 4. 合成判断
+        return bool(b1_base and trend_ok and brick_ok)
+
+    def select(self, date: pd.Timestamp, data: dict) -> list:
+        picks = []
+        # 将输入日期转换为字符串，方便与 DataFrame 比较
+        target_date_str = date.strftime('%Y-%m-%d')
+        logger.info(f"--- 红梅B1+砖头策略筛选中 [{target_date_str}] ---")
+
+        for code, df in data.items():
+            try:
+                # 确保日期列是字符串格式进行过滤
+                df['date'] = df['date'].astype(str)
+                sub = df[df['date'] <= target_date_str].copy()
                 if self._passes_filters(sub, code):
                     picks.append(code)
             except Exception as e:

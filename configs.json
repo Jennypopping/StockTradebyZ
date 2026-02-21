@@ -116,6 +116,19 @@
         "brick_threshold": 4.0,
         "strength_ratio": 5.0
       }
+    },
+    {
+      "class": "HongMeiB1BrickCombinedSelector",
+      "alias": "红梅B1-砖头双重保险战法",
+      "activate": true,
+      "params": {
+        "m1": 14,
+        "m2": 28,
+        "m3": 57,
+        "m4": 114,
+        "j_threshold": 13.0,
+        "strength_ratio": 0.666
+      }
     }
   ]
 }
