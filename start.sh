@@ -2,6 +2,7 @@
 
 # --- 1. 环境与路径配置 ---
 # 激活虚拟环境 (假设你的虚拟环境文件夹叫 venv)
+cd /home/code/StockTradebyZ
 source venv/bin/activate
 
 # 定义全局汇总日志
