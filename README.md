@@ -88,7 +88,7 @@ python fetch_kline.py \
   --workers 6
 ```
 ```
-python fetch_kline.py --start 20250101 --end today --stocklist ./stocklist.csv --exclude-boards star bj --out ./data --workers 6
+python fetch_kline_new.py --start 20250101 --end today --stocklist ./stocklist.csv --exclude-boards star bj --out ./data --workers 4
 ```
 * **数据源固定**：Tushare 日线，**前复权 qfq**。
 * **保存策略**：每只股票**全量覆盖写入** `./data/XXXXXX.csv`。
@@ -386,3 +386,23 @@ python select_stock.py --data-dir ./data --config ./configs.json
 * 本仓库仅供学习与技术研究之用，**不构成任何投资建议**。股市有风险，入市需谨慎。
 * 数据来源与接口可能随平台策略调整而变化，请合法合规使用。
 * 致谢 **@Zettaranc** 在 Bilibili 的无私分享：[https://b23.tv/JxIOaNE](https://b23.tv/JxIOaNE)
+
+
+---
+```
+
+## todo:
+1、每日收盘后更新数据并运行选股，输出结果到飞书
+2、盘中量化策略
+```
+gemini推荐的方案：盘中实时“缝合”法
+这个方案的逻辑是：历史 CSV 不动，内存中临时拼接。
+
+基础数据（本地）：每天开盘前，本地已经有了到昨天收盘为止的完整 CSV。
+
+盘中获取（API）：每半小时，调用 Tushare 的实时行情接口（如 pro.quotes）获取当前所有股票的最新价格、成交量。
+
+内存拼接：在 Python 运行选股逻辑时，将本地 CSV 的 DataFrame 和这一行最新的实时数据 pd.concat 在一起。
+
+计算指标：基于这个“历史+当前”的临时 DataFrame 计算 BBI、KDJ 等指标。
+```

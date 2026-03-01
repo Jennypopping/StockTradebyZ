@@ -36,7 +36,7 @@
     {
       "class": "BBIShortLongSelector",
       "alias": "补票战法",
-      "activate": false,
+      "activate": true,
       "params": {
         "n_short": 5,
         "n_long": 21,
