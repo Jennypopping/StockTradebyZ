@@ -1,0 +1,24 @@
+# --- 股票数据 (最重要，防止上传海量 CSV) ---
+data/
+*.csv
+*.xlsx
+*.log
+
+# --- Python 虚拟环境 ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- 缓存与编译文件 ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- 操作系统与 IDE 配置 ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
