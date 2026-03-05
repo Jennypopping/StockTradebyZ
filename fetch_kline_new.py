@@ -170,7 +170,7 @@ def main():
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(fetch_one, code, args.start, target_end, out_dir, pro) for code in codes]
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="数据增量同步"):
+        for _ in tqdm(as_completed(futures), total=len(futures), desc="数据同步进度"):
             pass
 
     logger.info("全部同步完成！")

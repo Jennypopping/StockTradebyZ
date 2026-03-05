@@ -88,7 +88,7 @@ python fetch_kline.py \
   --workers 6
 ```
 ```
-python fetch_kline_new.py --start 20250101 --end today --stocklist ./stocklist.csv --exclude-boards star bj --out ./data --workers 4
+python fetch_kline_new.py --start 20250101 --end today --stocklist ./stocklist.csv --exclude-boards star bj --out ./data --workers 3
 ```
 * **数据源固定**：Tushare 日线，**前复权 qfq**。
 * **保存策略**：每只股票**全量覆盖写入** `./data/XXXXXX.csv`。
