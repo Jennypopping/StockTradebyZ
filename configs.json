@@ -115,7 +115,7 @@
     {
       "class": "BrickMomentumSelector",
       "alias": "砖型图转红超短战法",
-      "activate": false,
+      "activate": true,
       "params": {
         "m1": 14,
         "m2": 28,
