@@ -1237,15 +1237,13 @@ class BrickMomentumSelector:
         C, H, L = df['close'], df['high'], df['low']
 
         # ===== 2. 趋势线判定 (白线要在黄线上方) =====
-        # 白线: EMA(EMA(C, 10), 10)
         wl = self._ema(self._ema(C, 10), 10)
-        # 黄线: (MA14+MA28+MA57+MA114)/4
+        # 计算黄线时，若数据不足 m1/m2/m3/m4，rolling 会返回 NaN，逻辑会自动过滤掉
         yl = (C.rolling(self.m1).mean() +
               C.rolling(self.m2).mean() +
               C.rolling(self.m3).mean() +
               C.rolling(self.m4).mean()) / 4
 
-        # 核心过滤：趋势必须向上
         if wl.iloc[-1] <= yl.iloc[-1]:
             return False
 
@@ -1254,7 +1252,6 @@ class BrickMomentumSelector:
         llv4 = L.rolling(4).min()
         diff4 = hhv4 - llv4
 
-        # 针对平价、停牌等特殊情况的 var1a/var3a 处理
         var1a = (hhv4 - C) / np.where(diff4 == 0, 1e-6, diff4) * 100 - 90
         var2a = self._sma(var1a, 4, 1) + 100
 
@@ -1263,7 +1260,6 @@ class BrickMomentumSelector:
         var5a = self._sma(var4a, 6, 1) + 100
 
         var6a = var5a - var2a
-        # 砖型图计算逻辑
         brick = np.where(var6a > 4, var6a - 4, 0)
         brick_series = pd.Series(brick, index=df.index)
         brick_diff = brick_series.diff()
@@ -1272,12 +1268,10 @@ class BrickMomentumSelector:
         today_diff = brick_diff.iloc[-1]  # 今日红砖增量 (正数)
         yesterday_diff = brick_diff.iloc[-2]  # 昨日绿砖减量 (负数)
 
-        # 拐点逻辑：昨日正在下跌(绿砖)，今日强烈反击(红砖)
         is_reversal = (today_diff > 0) and (yesterday_diff < 0)
         if not is_reversal:
             return False
 
-        # 力度逻辑：今日反击量级 >= 昨日杀跌量级的 2.0 倍
         strength_ok = today_diff >= (abs(yesterday_diff) * 2.0)
         if not strength_ok:
             return False
@@ -1287,7 +1281,6 @@ class BrickMomentumSelector:
         prev_close = C.iloc[-2]
         change_pct = (last_close - prev_close) / prev_close * 100
 
-        # 条件：涨幅在 0% 到 3% 之间 (包含 3%)
         if not (0 < change_pct <= 3.0):
             return False
 
@@ -1299,10 +1292,15 @@ class BrickMomentumSelector:
 
     def select(self, date: pd.Timestamp, data: dict) -> list:
         picks = []
-        logger.info(f"--- 砖头动能策略开始筛选 [{date.date()}] ---")
+        # 统一日期格式为字符串，修复 '<=' not supported between 'str' and 'Timestamp' 报错
+        target_date_str = date.strftime('%Y-%m-%d')
+        logger.info(f"--- 砖头动能策略开始筛选 [{target_date_str}] ---")
+
         for code, df in data.items():
             try:
-                sub = df[df['date'] <= date].copy()
+                # 确保 df 内部日期也是字符串格式
+                df['date'] = df['date'].astype(str)
+                sub = df[df['date'] <= target_date_str].copy()
                 if self._passes_filters(sub, code):
                     picks.append(code)
             except Exception as e:
@@ -1313,7 +1311,6 @@ class BrickMomentumSelector:
 class HongMeiB1BrickCombinedSelector:
     """
     红梅B1 + 砖头爆发实战放宽版
-    已适配列名: volume, amount, open, close, high, low
     """
 
     def __init__(self,
@@ -1419,7 +1416,6 @@ class HongMeiB1BrickCombinedSelector:
         y_diff = brick_diff.iloc[-2]
         brick_ok = (t_diff > 0) and (y_diff < 0) and (t_diff >= abs(y_diff) * self.strength_ratio)
 
-        # 4. 合成判断
         return bool(b1_base and trend_ok and brick_ok)
 
     def select(self, date: pd.Timestamp, data: dict) -> list:
@@ -1430,7 +1426,6 @@ class HongMeiB1BrickCombinedSelector:
 
         for code, df in data.items():
             try:
-                # 确保日期列是字符串格式进行过滤
                 df['date'] = df['date'].astype(str)
                 sub = df[df['date'] <= target_date_str].copy()
                 if self._passes_filters(sub, code):
