@@ -1,18 +1,11 @@
 from typing import Dict, List, Optional, Any
-
 from scipy.signal import find_peaks
-import numpy as np
-import pandas as pd
-import logging
-# 所有import必须放在文件顶部
 import logging
 import os
 from datetime import datetime
 from typing import List, Any, Dict
 import pandas as pd
 import numpy as np
-from pathlib import Path
-from tqdm import tqdm
 
 logger = logging.getLogger("selector")
 
@@ -1317,13 +1310,6 @@ class BrickMomentumSelector:
         return picks
 
 
-import pandas as pd
-import numpy as np
-import logging
-
-logger = logging.getLogger(__name__)
-
-
 class HongMeiB1BrickCombinedSelector:
     """
     红梅B1 + 砖头爆发实战放宽版
@@ -1451,4 +1437,66 @@ class HongMeiB1BrickCombinedSelector:
                     picks.append(code)
             except Exception as e:
                 logger.error(f"[{code}] 策略运行异常: {e}")
+        return picks
+
+
+class SingleNeedleUnder20Selector:
+    """
+    单针下20 - 通达信对标版
+    N1:=3;
+    短期:=100*(C-LLV(L,N1))/(HHV(C,N1)-LLV(L,N1));
+    选股: REF(短期,1)>=80 AND 短期<=20;
+    """
+
+    def __init__(self, n1=3):
+        self.n1 = n1
+
+    def _passes_filters(self, df, code):
+        # 确保数据按日期从旧到新排列
+        df = df.copy().sort_values('date').reset_index(drop=True)
+
+        # 基础数据量检查：N1周期 + 1位REF，至少需要 N1+1 行有效数据
+        if len(df) < self.n1 + 1:
+            return False
+
+        C = df['close']
+        L = df['low']
+
+        # --- 还原通达信指标计算 ---
+        # 1. LLV(L, N1): N1周期内最低价的最低值
+        llv_l = L.rolling(window=self.n1).min()
+
+        # 2. HHV(C, N1): N1周期内收盘价的最高值 (注意公式里是C)
+        hhv_c = C.rolling(window=self.n1).max()
+
+        # 3. 计算“短期”
+        diff = hhv_c - llv_l
+        # 模拟通达信在分母为0时的处理（通常返回0或保持不变，这里用极小值规避溢出）
+        short_term = 100 * (C - llv_l) / np.where(diff == 0, 1e-6, diff)
+
+        # --- 执行选股条件 ---
+        # 今天的指标: 短期
+        current_val = short_term.iloc[-1]
+        # 昨天的指标: REF(短期, 1)
+        yesterday_val = short_term.iloc[-2]
+
+        # 选股逻辑: REF(短期,1)>=80 AND 短期<=20
+        is_hit = (yesterday_val >= 80) and (current_val <= 20)
+
+        return bool(is_hit)
+
+    def select(self, date: pd.Timestamp, data: dict) -> list:
+        picks = []
+        target_date_str = date.strftime('%Y-%m-%d')
+
+        for code, df in data.items():
+            try:
+                # 过滤出目标日期及之前的所有历史数据
+                df['date'] = df['date'].astype(str)
+                sub = df[df['date'] <= target_date_str].copy()
+
+                if self._passes_filters(sub, code):
+                    picks.append(code)
+            except Exception as e:
+                logger.error(f"[{code}] 计算异常: {e}")
         return picks

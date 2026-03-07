@@ -36,7 +36,7 @@
     {
       "class": "BBIShortLongSelector",
       "alias": "补票战法",
-      "activate": true,
+      "activate": false,
       "params": {
         "n_short": 5,
         "n_long": 21,
@@ -76,7 +76,7 @@
     {
       "class": "BigBullishVolumeSelector",
       "alias": "暴力K战法",
-      "activate": true,
+      "activate": false,
       "params": {
         "up_pct_threshold": 0.06,
         "upper_wick_pct_max": 0.02,
@@ -105,9 +105,17 @@
       }
     },
     {
+      "class": "SingleNeedleUnder20Selector",
+      "alias": "单针下20战法",
+      "activate": true,
+      "params": {
+        "n1": 3
+      }
+    },
+    {
       "class": "BrickMomentumSelector",
       "alias": "砖型图转红超短战法",
-      "activate": true,
+      "activate": false,
       "params": {
         "m1": 14,
         "m2": 28,
