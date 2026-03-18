@@ -21,7 +21,7 @@ python3 fetch_kline_new.py \
     --stocklist ./stocklist.csv \
     --exclude-boards star bj \
     --out ./data \
-    --workers 4 >> $START_LOG 2>&1
+    --workers 1 >> $START_LOG 2>&1
 
 # 检查退出码 ($? 为 0 代表成功)
 if [ $? -eq 0 ]; then
